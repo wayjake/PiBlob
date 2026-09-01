@@ -1,10 +1,11 @@
 # PiBlob
 
 A Rust physics game built with [Rapier](https://rapier.rs), targeting the composite (RCA)
-video output of a **Raspberry Pi 3 Model B+**.
+video output of a **Raspberry Pi 3 Model B**.
 
-There is no desktop build. The Pi is the only target. Code is edited on the Mac, synced to
-the Pi over SSH, and built and run there.
+The Pi is the only place the game runs. It is not, however, where the game is built. Code is
+edited on a Mac and compiled there inside an aarch64 Linux container that matches the Pi's
+Debian release, and only the finished binary crosses the network.
 
 ---
 
@@ -12,8 +13,8 @@ the Pi over SSH, and built and run there.
 
 | | |
 |---|---|
-| Board | Raspberry Pi 3 Model B+ (Cortex-A53, 1GB RAM, VideoCore IV) |
-| OS | Raspberry Pi OS Lite (64-bit, Bookworm) — no desktop environment |
+| Board | Raspberry Pi 3 Model B Rev 1.2 (Cortex-A53 @ 1.2GHz, 1GB RAM, VideoCore IV) |
+| OS | Raspberry Pi OS Lite (64-bit, Debian 13 trixie) — no desktop environment |
 | Output | Composite video on the 4-pole TRRS jack |
 | Signal | NTSC, 720x480 interlaced, 4:3 |
 | Internal render resolution | 320x240, nearest-neighbour upscaled by SDL |
@@ -37,98 +38,110 @@ These are not stylistic preferences. Violating them produces visible artifacts o
 
 ---
 
+## Why the build happens in a container
+
+The Mac is Apple Silicon, which is arm64. The Pi is aarch64 Linux. Those are the same CPU
+architecture, so an arm64 Linux container on the Mac runs natively with no emulation, and
+what it produces is a native binary for the Pi rather than a cross-compiled one.
+
+Pinning the image to the Pi's own Debian release makes the runtime match exactly:
+
+| | Pi | Build container |
+|---|---|---|
+| OS | Debian 13 trixie | Debian 13 trixie |
+| Architecture | aarch64 | arm64 |
+| glibc | 2.41 | 2.41 |
+| SDL2 | 2.32.4 | 2.32.4 |
+| Rust | none installed | 1.98 |
+
+Rust comes from the container image rather than Debian's `apt`, whose 1.85 is below
+rapier2d's declared minimum of 1.86.
+
+The payoff is the iteration loop. Compiling Rapier on the Pi itself takes 15 to 30 minutes
+and needs swap the board does not have. In the container it is seconds.
+
+| | Measured |
+|---|---|
+| Cold build, rapier2d + sdl2, dependencies at `opt-level = 3` | 26s |
+| Incremental rebuild of game code | 1.3s |
+| Binary pushed to the Pi, `debug = "line-tables-only"` | 13MB |
+
+---
+
+## One-time Mac setup
+
+```bash
+brew install colima docker
+colima start --vm-type vz --mount-type virtiofs --cpu 6 --memory 8 --disk 40
+```
+
+Confirm the VM is the right architecture. This must say `aarch64`:
+
+```bash
+docker info --format '{{.Architecture}}'
+```
+
+Colima only mounts your home directory into the VM, so the repository has to live somewhere
+under `/Users/<you>`.
+
+If a Docker Desktop install was ever present, a stale `"credsStore": "desktop"` may remain
+in `~/.docker/config.json` and will break image pulls with `docker-credential-desktop:
+executable file not found`. Remove that key.
+
+---
+
 ## One-time Pi setup
 
-Flash Raspberry Pi OS Lite (64-bit), enable SSH, then:
+Flash Raspberry Pi OS Lite (64-bit), enable SSH, then copy the provisioning script over and
+run it **on the Pi**:
 
 ```bash
+scp scripts/setup-pi.sh jake@raspberrypi.local:
 ssh jake@raspberrypi.local
+./setup-pi.sh
+sudo reboot
 ```
 
-Copy `scripts/setup-pi.sh` over and run it, or follow the steps manually:
+It installs the SDL2 runtime, appends `,composite` to the KMS overlay in
+`/boot/firmware/config.txt` with `enable_tvout=1`, and adds you to the `video`, `render`,
+and `input` groups. Outside of X, SDL reads input directly from evdev, and without the
+`input` group the game runs fine and silently receives no key events.
 
-### 1. Enable composite output
+It does not install Rust, a compiler, or swap. The Pi needs none of them.
 
-Edit `/boot/firmware/config.txt`:
-
-```
-dtoverlay=vc4-kms-v3d,composite
-enable_tvout=1
-```
-
-Appending `,composite` to the KMS overlay line is what actually enables the output; it
-defaults to NTSC. `enable_tvout=1` is not required by the KMS driver, but it gives you the
-firmware bootsplash on composite, which is how you confirm the Pi is outputting *anything*
-before blaming your code.
-
-Reboot. You should see the rainbow splash on the TV.
-
-### 2. Install dependencies
+After the reboot you can confirm composite is live without looking at the TV:
 
 ```bash
-sudo apt update
-sudo apt install -y libsdl2-dev libdrm-dev libgbm-dev build-essential pkg-config
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-The Bookworm `libsdl2-dev` package is built with the KMSDRM backend, which is what lets the
-game render straight to the display with no X server or compositor.
-
-### 3. Grant device access
-
-```bash
-sudo usermod -aG video,render,input jake
-```
-
-Outside of X, SDL reads input directly from evdev. Without the `input` group the game runs
-fine and silently receives no keyboard or gamepad events.
-
-Log out and back in for group changes to apply.
-
-### 4. Increase swap
-
-The 3B+ has 1GB of RAM and `rustc` will OOM linking a release build of Rapier.
-
-```bash
-sudo dphys-swapfile swapoff
-sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
-sudo dphys-swapfile setup && sudo dphys-swapfile swapon
+ls /sys/class/drm/     # expect a card0-Composite-1 entry
 ```
 
 ---
 
 ## Development workflow
 
-Edit on the Mac. Sync and run on the Pi.
+Edit on the Mac. Build in the container. Run on the Pi.
 
 ```bash
-./scripts/sync.sh    # rsync the tree to jake@raspberrypi.local:~/PiBlob
-./scripts/run.sh     # sync, build, and launch on the Pi
+./scripts/cargo.sh build      # or add, test, clippy — any cargo command
+./scripts/run.sh              # build, ship the binary, launch it on the Pi
+PROFILE=release ./scripts/run.sh
 ```
 
-`target/` and `.git/` are excluded from the sync, so the Pi keeps its own build cache and
-incremental rebuilds stay fast.
-
-### Build times
-
-The first build is slow — expect 15–30 minutes for the Rapier dependency tree on a 3B+.
-After that, incremental rebuilds of your own code are tolerable (tens of seconds).
-
-Two things keep this bearable, both configured in `Cargo.toml`:
-
-- Dependencies are compiled with `opt-level = 3` even in the dev profile. Unoptimized Rapier
-  is unusably slow; unoptimized game code is fine.
-- Builds use `-j2` to avoid exhausting RAM.
+`scripts/cargo.sh` bind-mounts the repository into the container and keeps the crates.io
+registry in a named volume, so dependency resolution stays warm between runs. It runs as
+your own uid, so files it writes into the tree are yours and not root's.
 
 ### Running
 
 The game must own the display. Two options:
 
-**Over SSH** (normal iteration) — works as long as nothing else holds DRM master. If you get
-`No available video device`, something on tty1 has the display; see below.
+**Over SSH** (normal iteration) — what `run.sh` does. Works as long as nothing else holds
+DRM master.
 
 **As a systemd unit on tty1** (what shipping looks like) — see `scripts/piblob.service`
-generated by the bootstrap.
+generated by the bootstrap. Give it `Conflicts=getty@tty1.service`, and note that while it
+is enabled with `Restart=always`, `run.sh` can never acquire the display. Stop the unit
+first.
 
 ---
 
@@ -138,10 +151,12 @@ generated by the bootstrap.
 |---|---|
 | Black screen, no bootsplash | Composite not enabled in `config.txt`, or wrong TRRS cable pinout |
 | Bootsplash appears, game doesn't | Video driver not KMSDRM — check `SDL_VIDEODRIVER=kmsdrm` |
-| `No available video device` | Another process holds DRM master; stop it, or run from tty1 |
+| `libSDL2-2.0.so.0: cannot open shared object file` | `setup-pi.sh` has not run; the SDL2 runtime is missing |
+| `No available video device` | Another process holds DRM master; stop it, or stop `piblob.service` |
 | Game runs, ignores input | User not in the `input` group |
 | Picture rolls or goes B&W | PAL/NTSC mismatch — set `vc4.tv_norm=` in `cmdline.txt` |
 | Edges of the UI cut off | Not respecting the title-safe inset |
+| `docker-credential-desktop: not found` | Stale `credsStore` in `~/.docker/config.json` |
 
 Note the TRRS pinout: on the standard Raspberry Pi cable, composite video comes out of the
 **red** connector, not the yellow one, on many third-party cables. Check both.
@@ -153,8 +168,10 @@ Note the TRRS pinout: on the standard Raspberry Pi cable, composite video comes 
 ```
 AGENTS.md              Conventions and constraints for coding agents
 BOOTSTRAP_PROMPT.md    The prompt used to generate the initial application
+CLAUDE.md              Guidance for Claude Code
+docker/Dockerfile      The aarch64 Debian trixie build image
+scripts/cargo.sh       Run any cargo command inside that image
+scripts/run.sh         Build, ship the binary to the Pi, and launch it
 scripts/setup-pi.sh    One-time Pi provisioning
-scripts/sync.sh        Push the working tree to the Pi
-scripts/run.sh         Sync, build, and launch
 src/                   Game source
 ```

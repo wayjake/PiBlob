@@ -6,10 +6,11 @@ Paste the block below into your coding agent as the first task in this repositor
 
 Bootstrap a Rust project in this repository called `piblob`.
 
-**Target:** a Raspberry Pi 3 Model B+ running Raspberry Pi OS Lite (64-bit, Bookworm), with
-no desktop environment, displaying on a CRT television over composite video. This is the
-only target. There is no desktop build and no cross-compilation. Read `AGENTS.md` before
-writing any code and treat its constraints as non-negotiable.
+**Target:** a Raspberry Pi 3 Model B running Raspberry Pi OS Lite (64-bit, Debian 13
+trixie), with no desktop environment, displaying on a CRT television over composite video.
+That is the only place it runs. It is built on the Mac inside an aarch64 Debian trixie
+container that matches the Pi, via `./scripts/cargo.sh`; the Pi itself compiles nothing.
+Read `AGENTS.md` before writing any code and treat its constraints as non-negotiable.
 
 **Goal for this first pass:** the smallest thing that proves the whole stack works end to
 end — a window-less SDL2 app rendering to the composite framebuffer, stepping a Rapier
@@ -17,29 +18,40 @@ simulation, responding to keyboard input. Gameplay comes later.
 
 ## Scaffold
 
-Create a binary crate with `cargo init --name piblob`. Add dependencies with `cargo add
-rapier2d sdl2` — do not write version numbers from memory, let the registry resolve them.
-Ensure `sdl2` links against the system SDL2 (Bookworm's `libsdl2-dev`) and that the
-`bundled` feature is **off**.
+Every cargo command runs through the container wrapper. There is no Rust on the Mac.
+
+```bash
+./scripts/cargo.sh init --name piblob
+./scripts/cargo.sh add rapier2d
+./scripts/cargo.sh add sdl2 --features use-pkgconfig
+```
+
+Do not write version numbers or API calls from memory. Let the registry resolve versions and
+let the compiler tell you the current shape of Rapier's API; it changes between releases.
 
 Add to `Cargo.toml`:
 
 ```toml
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.dev]
+debug = "line-tables-only"
 ```
 
-Unoptimized Rapier is too slow to run at 60Hz on this hardware; unoptimized game code is
-fine and compiles much faster.
+Unoptimized Rapier is too slow to run at 60Hz on this hardware, while unoptimized game code
+is fine and compiles much faster. The debuginfo setting keeps line numbers in panics and cuts
+the binary from roughly 33MB to 13MB, which matters because that binary is copied to the Pi
+on every iteration.
 
-Create `.cargo/config.toml` setting `jobs = 2` — the board has 1GB of RAM and four parallel
-`rustc` processes will OOM.
+Do not create `.cargo/config.toml` to limit parallelism. The old `jobs = 2` setting existed
+because the Pi has 1GB of RAM; the container has 8GB and six cores.
 
 ## Display initialization
 
 - Force the KMSDRM video backend: `SDL_VIDEODRIVER=kmsdrm`, set from within the program via
   `sdl2::hint::set` before `sdl2::init()`, so it works regardless of how the binary is
-  launched.
+  launched. Nothing sets this in the environment for you.
 - Create a fullscreen-desktop window. Do not request a specific window size; take whatever
   mode the composite connector reports (it will be 720x480).
 - Set `SDL_HINT_RENDER_SCALE_QUALITY` to `"0"` for nearest-neighbour scaling.
@@ -52,34 +64,48 @@ Create `.cargo/config.toml` setting `jobs = 2` — the board has 1GB of RAM and 
 ```
 src/main.rs        init, the loop, shutdown
 src/physics.rs     Rapier world wrapper
-src/render.rs      all drawing, palette, safe-area constants
+src/render.rs      all drawing, palette, safe-area constants, the units conversion
 src/input.rs       SDL event pump -> a plain InputState struct
 src/game.rs        game state and update logic
 ```
 
-`render.rs` owns:
+`render.rs` owns the safe area, the palette, and the one place pixels and meters meet:
 
 ```rust
 pub const SAFE_X0: i32 = 32;
 pub const SAFE_Y0: i32 = 24;
 pub const SAFE_X1: i32 = 288;
 pub const SAFE_Y1: i32 = 216;
+
+pub const PIXELS_PER_METER: f32 = 32.0;
 ```
 
-and a named palette table of muted, low-saturation colors. No RGB literals anywhere else.
+Expose the safe area in meters from `render.rs`, derived from those constants, and build the
+demo scene from that. `physics.rs` and `game.rs` must never see a pixel value, and nothing
+outside `render.rs` may multiply or divide by `PIXELS_PER_METER`. At this scale the safe area
+is 8m by 6m and a 4px body is 0.125m, inside the range Rapier's defaults expect.
+
+Also in `render.rs`: a named palette table of muted, low-saturation colors. No RGB literals
+anywhere else.
 
 ## The loop
 
 Fixed timestep. Accumulate real elapsed time, step Rapier in fixed `1.0/60.0` increments,
 render once per iteration, present. Do not pass a variable delta to the physics step. Do not
-allocate on the heap inside the loop.
+allocate on the heap in game code inside the loop; Rapier's `step` allocates internally and
+that is fine.
+
+Cap the accumulator so a long stall cannot spiral into unbounded catch-up. Note in
+`docs/DISPLAY.md` whether `present()` appears to block on vblank under KMSDRM: if it does
+not, the loop will spin at full speed and needs a frame limiter.
 
 ## Demo scene
 
 - A static ground collider spanning the bottom of the safe area, and static walls at the
-  left and right safe-area edges.
-- 20 dynamic circular rigid bodies with restitution around 0.6, spawned at random positions
-  in the upper half.
+  left and right safe-area edges, all defined in meters.
+- 20 dynamic circular rigid bodies with restitution around 0.6, spawned at pseudo-random
+  positions in the upper half. Write a small xorshift or LCG in game code for this; do not
+  add the `rand` crate. Seed it with a constant so a respawn is reproducible.
 - Left/right arrow keys apply a horizontal impulse to all dynamic bodies. Space respawns
   them. Escape exits cleanly.
 - Draw each body as a filled rect (a circle approximation is fine at this resolution) at
@@ -88,19 +114,24 @@ allocate on the heap inside the loop.
 
 ## Also produce
 
-- `scripts/piblob.service` — a systemd unit that runs the release binary on tty1 as user
-  `jake`, with `Restart=always`, so the game survives a crash and starts at boot.
+- `scripts/piblob.service` — a systemd unit that runs the binary on tty1 as user `jake`,
+  with `Restart=always` so the game survives a crash and starts at boot. Give it
+  `Conflicts=getty@tty1.service`, and note in the README that `run.sh` cannot acquire the
+  display while this unit is running.
 - A short `docs/DISPLAY.md` recording exactly what you observed and what remains unverified.
 
 ## Constraints, restated
 
-No winit, Bevy, macroquad, or wgpu. No async runtime. No ECS. No asset pipeline. Single
-threaded. If a constraint in `AGENTS.md` makes a piece of this impossible, stop and say so
-rather than working around it.
+No winit, Bevy, macroquad, or wgpu. No async runtime. No ECS. No asset pipeline. No `rand`.
+Single threaded. If a constraint in `AGENTS.md` makes a piece of this impossible, stop and
+say so rather than working around it.
 
 ## Verification
 
 You cannot see the TV. After building, state plainly which parts you verified (it compiles,
-it runs without panicking, the frame timing holds) and which parts require a human looking
-at the screen (colors, overscan, interlace flicker, readability). Do not claim the display
-output is correct.
+tests pass, it runs without panicking, the frame timing holds) and which parts require a
+human looking at the screen (colors, overscan, interlace flicker, readability). Do not claim
+the display output is correct.
+
+Note also that the SDL2 KMSDRM backend has not yet been confirmed working on this particular
+Pi. The first successful display init is what proves it.

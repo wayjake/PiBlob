@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @AGENTS.md
 
-Read `AGENTS.md` before touching code. Its hard constraints (Pi-only target, SDL2/KMSDRM,
-320x240 logical render, fixed 1/60 timestep, title-safe inset, no 1px horizontal lines,
-muted palette, permitted crates) are binding and are not restated here. `README.md` covers
-Pi provisioning, the composite-video signal constraints, and a symptom/cause debugging table.
+Read `AGENTS.md` before touching code. Its hard constraints (container-only builds,
+SDL2/KMSDRM, 320x240 logical render, fixed 1/60 timestep, the single units boundary,
+title-safe inset, no 1px horizontal lines, muted palette, permitted crates) are binding and
+are not restated here. `README.md` covers Mac and Pi setup, why the build runs in a
+container, and a symptom/cause debugging table.
 
 ## Current state
 
@@ -18,53 +19,54 @@ this section once the crate exists.
 
 ```
 src/main.rs     init, fixed-timestep loop, shutdown — nothing else
-src/physics.rs  Rapier world wrapper; units are meters
-src/render.rs   all drawing, the palette table, SAFE_X0/Y0/X1/Y1 constants; units are logical pixels
+src/physics.rs  Rapier world wrapper; meters only
+src/render.rs   drawing, palette, safe-area constants, PIXELS_PER_METER
 src/input.rs    SDL event pump -> plain InputState struct
-src/game.rs     game state and update logic
+src/game.rs     game state and update logic; meters only
 ```
 
-Meters-to-pixels conversion happens at exactly one boundary via a named constant.
+**The Pi is not provisioned yet.** As of the last check it had no SDL2 runtime and composite
+output was still disabled in `config.txt`. `scripts/setup-pi.sh` does both but needs an
+interactive sudo password, so a human has to run it. Until then a binary copied to the Pi
+fails with `libSDL2-2.0.so.0: cannot open shared object file`. Re-probe rather than trusting
+this paragraph.
 
-**The Pi is not provisioned yet.** As of the last check it had no Rust toolchain, no SDL2,
-no swap, and composite output still disabled in `config.txt`. Run `scripts/setup-pi.sh` on
-the Pi before expecting any build to work. Re-probe rather than trusting this paragraph.
-
-**The Pi runs Debian 13 (trixie), not Bookworm.** Every doc in this repo says Bookworm.
-Treat package names and versions from those docs as unverified on this host.
+The build container itself is verified working: a throwaway crate against `rapier2d` and
+`sdl2` compiled and produced an aarch64 ELF whose libc, libm, and libgcc_s all resolved
+against the Pi's own libraries.
 
 ## Commands
 
-Every build runs **on the Pi over SSH**. `cargo build` on the Mac fails at the SDL2 link
-step, and there is currently no Rust toolchain on the Mac at all. Both scripts honor
-`PI_HOST` (default `jake@raspberrypi.local`) and `PI_DEST` (default `PiBlob`).
+Every cargo command runs inside the container. There is no Rust toolchain on the Mac.
 
 | Task | Command |
 |---|---|
-| Provision the Pi (run on the Pi) | `scripts/setup-pi.sh` |
-| Sync tree to Pi | `./scripts/sync.sh` |
-| Sync, build, launch | `./scripts/run.sh` |
-| Build only | `ssh $PI_HOST 'cd PiBlob && cargo build -j2'` |
-| Run all tests | `ssh $PI_HOST 'cd PiBlob && cargo test -j2'` |
-| Run one test | `ssh $PI_HOST 'cd PiBlob && cargo test -j2 <test_name>'` |
+| Any cargo command | `./scripts/cargo.sh <args>` |
+| Build | `./scripts/cargo.sh build` |
+| Run all tests | `./scripts/cargo.sh test` |
+| Run one test | `./scripts/cargo.sh test <test_name>` |
+| Build, ship, and run on the Pi | `./scripts/run.sh` |
+| Same, release profile | `PROFILE=release ./scripts/run.sh` |
 
-Always pass `-j2`; four parallel `rustc` processes OOM the 1GB board.
-
-If a remote `cargo` invocation reports `command not found`, that is expected for a rustup
-install: `ssh host 'cmd'` runs a non-interactive shell that sources neither `.bashrc` nor
-`.profile`, so `~/.cargo/bin` is not on `PATH`. Use the absolute path `~/.cargo/bin/cargo`.
+`run.sh` honors `PI_HOST` (default `jake@raspberrypi.local`) and `PI_DEST` (default
+`PiBlob`). Do not pass `-j2`; that existed for the Pi's 1GB of RAM and no longer applies.
 
 ## Gotchas for agent sessions
 
-- **First build is 15–30 minutes.** The Bash tool times out at 10 minutes. Run the remote
-  build in the background, or split build from launch.
-- **Don't launch the game from a blocking call.** `run.sh` uses `ssh -t` and runs the game
-  in the foreground. With no TTY there is no Ctrl-C and nobody presses Escape, so the
+- **Colima must be running.** It does not survive a reboot on its own. If docker commands
+  fail to connect, `colima start`. A first start pulls a VM image and can exceed the Bash
+  tool's 10 minute timeout, so background it.
+- **Check exit codes, not just output.** Piping a build through `tail` masks failure,
+  because the pipeline reports the exit status of `tail`. A Docker build that printed a
+  clean-looking tail had in fact failed here.
+- **Don't launch the game from a blocking call.** `run.sh` ends with `ssh -t` and runs the
+  game in the foreground. With no TTY there is no Ctrl-C and nobody presses Escape, so the
   process keeps DRM master and the next launch fails with `No available video device`.
-  Clear it with `ssh $PI_HOST pkill piblob` if it was started by `run.sh`, or
-  `ssh $PI_HOST sudo systemctl stop piblob` once the systemd unit exists — under
-  `Restart=always` a bare `pkill` just makes systemd start it again.
-- **You cannot see the TV.** Report what was verified (compiles, runs without panicking,
-  frame timing) separately from what needs a human at the screen (colors, overscan,
-  interlace flicker, readability). Never claim display output is correct. See the
+  `run.sh` already pkills a stale instance, but once the systemd unit exists a bare pkill
+  only makes systemd restart it. Use `ssh $PI_HOST sudo systemctl stop piblob`.
+- **Sudo on the Pi requires a password.** Anything needing root there has to be handed to
+  the user; it cannot be scripted from here.
+- **You cannot see the TV.** Report what was verified (compiles, tests pass, runs without
+  panicking, frame timing) separately from what needs a human at the screen (colors,
+  overscan, interlace flicker, readability). Never claim display output is correct. See the
   Verification section of `BOOTSTRAP_PROMPT.md`.
