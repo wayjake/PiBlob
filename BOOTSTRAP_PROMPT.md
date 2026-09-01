@@ -117,7 +117,8 @@ not, the loop will spin at full speed and needs a frame limiter.
 - `scripts/piblob.service` — a systemd unit that runs the binary on tty1 as user `jake`,
   with `Restart=always` so the game survives a crash and starts at boot. Give it
   `Conflicts=getty@tty1.service`, and note in the README that `run.sh` cannot acquire the
-  display while this unit is running.
+  display while this unit is running. `run.sh` places the binary at
+  `/home/jake/PiBlob/piblob` for both profiles, so that is the path the unit should use.
 - A short `docs/DISPLAY.md` recording exactly what you observed and what remains unverified.
 
 ## Constraints, restated
