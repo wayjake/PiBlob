@@ -24,9 +24,12 @@ Do not violate these. They come from the hardware, not from taste.
    (nearest neighbour).
 4. **Fixed timestep of 1/60s.** Accumulate wall-clock time and step Rapier in fixed
    increments. Never pass a variable frame delta to `PhysicsPipeline::step`. Cap the
-   accumulator so a long stall cannot spiral into an unbounded catch-up loop. NTSC is
-   59.94Hz against a 60Hz step, so expect a doubled step roughly every 17 seconds and
-   decide deliberately whether to absorb it or to run one step per presented frame.
+   accumulator so a long stall cannot spiral into an unbounded catch-up loop.
+   Measured on this board: `present()` blocks on vblank, so the loop is rate-limited for
+   free and must not add a frame limiter of its own. Median frame time is 16.668ms, which
+   is 59.99Hz, with zero frames beyond 1.5x median across 300 samples. The 59.94Hz NTSC
+   broadcast figure does not describe this mode, so the accumulator lands almost exactly
+   one step per frame and the drift worth worrying about is not there.
 5. **Title-safe inset of 10%.** Nothing the player needs to read may be drawn outside
    x ∈ [32, 288] or y ∈ [24, 216] in logical coordinates. Define these as constants.
 6. **One units boundary, and it lives in `render`.** Physics is in meters, drawing is in

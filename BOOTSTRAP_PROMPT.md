@@ -51,7 +51,10 @@ because the Pi has 1GB of RAM; the container has 8GB and six cores.
 
 - Force the KMSDRM video backend: `SDL_VIDEODRIVER=kmsdrm`, set from within the program via
   `sdl2::hint::set` before `sdl2::init()`, so it works regardless of how the binary is
-  launched. Nothing sets this in the environment for you.
+  launched. Nothing sets this in the environment for you. Be aware that a plain hint is
+  applied at normal priority and does **not** override an environment variable of the same
+  name, so an inherited `SDL_VIDEODRIVER` still wins. That is useful for forcing the
+  `dummy` driver in a test, and a trap if you assume the hint is authoritative.
 - Create a fullscreen-desktop window. Do not request a specific window size; take whatever
   mode the composite connector reports (it will be 720x480).
 - Set `SDL_HINT_RENDER_SCALE_QUALITY` to `"0"` for nearest-neighbour scaling.
@@ -95,9 +98,12 @@ render once per iteration, present. Do not pass a variable delta to the physics 
 allocate on the heap in game code inside the loop; Rapier's `step` allocates internally and
 that is fine.
 
-Cap the accumulator so a long stall cannot spiral into unbounded catch-up. Note in
-`docs/DISPLAY.md` whether `present()` appears to block on vblank under KMSDRM: if it does
-not, the loop will spin at full speed and needs a frame limiter.
+Cap the accumulator so a long stall cannot spiral into unbounded catch-up.
+
+`present()` has been measured blocking on vblank on this board at a median 16.668ms, with
+zero frames beyond 1.5x median over 300 samples, so the loop is already rate-limited. Do
+not add a frame limiter. Do not code around NTSC's nominal 59.94Hz either; this mode
+presents at 60.0Hz and the accumulator will land almost exactly one step per frame.
 
 ## Demo scene
 
@@ -134,5 +140,8 @@ tests pass, it runs without panicking, the frame timing holds) and which parts r
 human looking at the screen (colors, overscan, interlace flicker, readability). Do not claim
 the display output is correct.
 
-Note also that the SDL2 KMSDRM backend has not yet been confirmed working on this particular
-Pi. The first successful display init is what proves it.
+The SDL2 KMSDRM backend, the composite mode, and the frame timing have all been confirmed
+working on this board with a standalone probe, so a failure to open the display is a bug in
+your code rather than an unknown in the platform. What remains unverified is everything a
+human has to look at: colors over a composite signal, the real overscan boundary, interlace
+flicker, and readability.

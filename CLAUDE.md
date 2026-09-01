@@ -25,15 +25,18 @@ src/input.rs    SDL event pump -> plain InputState struct
 src/game.rs     game state and update logic; meters only
 ```
 
-**The Pi is not provisioned yet.** As of the last check it had no SDL2 runtime and composite
-output was still disabled in `config.txt`. `scripts/setup-pi.sh` does both but needs an
-interactive sudo password, so a human has to run it. Until then a binary copied to the Pi
-fails with `libSDL2-2.0.so.0: cannot open shared object file`. Re-probe rather than trusting
-this paragraph.
+**The Pi is provisioned and the display stack is verified.** A standalone probe built in the
+container brought up SDL2 on KMSDRM at 720x480 @ 60Hz, created a window, and presented 300
+frames at 60.14Hz with a 16.668ms median and no long frames. The build container is equally
+verified: an aarch64 ELF whose libc, libm, and libgcc_s all resolve against the Pi's own
+libraries. Re-probe rather than trusting this paragraph.
 
-The build container itself is verified working: a throwaway crate against `rapier2d` and
-`sdl2` compiled and produced an aarch64 ELF whose libc, libm, and libgcc_s all resolved
-against the Pi's own libraries.
+Two things about that stack are easy to break and hard to diagnose. SDL2 refuses to start
+KMSDRM unless some connector reports `connected`, and composite reports `unknown` forever
+because analog video cannot detect a load, so a systemd unit forces it. SDL2 also dlopens
+`libEGL.so.1`, which means apt records no dependency and the EGL packages have to be
+installed explicitly. `scripts/setup-pi.sh` handles both, but it needs an interactive sudo
+password, so a human has to run it.
 
 ## Commands
 

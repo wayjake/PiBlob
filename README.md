@@ -33,8 +33,9 @@ These are not stylistic preferences. Violating them produces visible artifacts o
   horizontally. Prefer muted, low-saturation palettes.
 - **Chunky shapes.** At an effective 320x240 with a soft analog signal, fine detail is lost.
   Design for readable silhouettes.
-- **60Hz fixed timestep.** NTSC is 59.94Hz. Step the physics at a fixed `1.0/60.0` and never
-  feed a variable delta into Rapier.
+- **60Hz fixed timestep.** Step the physics at a fixed `1.0/60.0` and never feed a variable
+  delta into Rapier. Measured, this mode presents at 60.0Hz rather than NTSC's nominal
+  59.94Hz, and `present()` blocks on vblank, so the loop needs no frame limiter.
 
 ---
 
@@ -65,6 +66,22 @@ and needs swap the board does not have. In the container it is seconds.
 | Cold build, rapier2d + sdl2, dependencies at `opt-level = 3` | 26s |
 | Incremental rebuild of game code | 1.3s |
 | Binary pushed to the Pi, `debug = "line-tables-only"` | 13MB |
+
+## Measured display behaviour
+
+Taken on the real board with SDL2 driving KMSDRM at 320x240 logical over the 720x480
+composite mode, across 300 frames after a 60 frame warmup.
+
+| | Measured |
+|---|---|
+| Reported mode | 720x480 @ 60Hz, ARGB8888 |
+| Steady-state present rate | 60.14Hz |
+| Frame time, median | 16.668ms |
+| Frame time, min / max | 16.289ms / 17.198ms |
+| Frames beyond 1.5x median | 0 of 300 |
+
+`present()` blocks on vblank, so a loop that simply presents every iteration is already
+rate-limited and must not add a limiter of its own.
 
 ---
 
@@ -102,10 +119,30 @@ ssh jake@raspberrypi.local
 sudo reboot
 ```
 
-It installs the SDL2 runtime, appends `,composite` to the KMS overlay in
-`/boot/firmware/config.txt` with `enable_tvout=1`, and adds you to the `video`, `render`,
-and `input` groups. Outside of X, SDL reads input directly from evdev, and without the
-`input` group the game runs fine and silently receives no key events.
+It is safe to re-run. It does four things.
+
+It installs the SDL2 runtime **and an EGL stack**. The EGL packages are not optional and
+apt will not pull them in on its own: SDL2 loads `libEGL.so.1` at runtime rather than
+linking against it, so there is no recorded dependency, but its KMSDRM backend builds
+every window on a GBM surface behind an EGL display. Without them SDL brings up the video
+driver and then fails window creation with `EGL not initialized`, even if you only ever
+intend to use the software renderer.
+
+It appends `,composite` to the KMS overlay in `/boot/firmware/config.txt` and sets
+`enable_tvout=1`.
+
+It installs a small systemd unit that **forces the composite connector to report
+connected**. Analog video has no load detection, so the encoder reports this connector as
+`unknown` forever, even with a TV attached and visibly displaying a picture. SDL2 counts a
+connector as usable only when it reports `connected` with at least one mode, so it
+concludes there is no display at all and refuses to start KMSDRM. Forcing the status is
+what makes the whole stack work. This is done with a unit rather than a `video=` kernel
+argument because a malformed `cmdline.txt` on a board whose only output is composite is
+painful to recover from.
+
+It adds you to the `video`, `render`, and `input` groups. Outside of X, SDL reads input
+directly from evdev, and without the `input` group the game runs fine and silently
+receives no key events.
 
 It does not install Rust, a compiler, or swap. The Pi needs none of them.
 
@@ -152,6 +189,8 @@ first.
 | Black screen, no bootsplash | Composite not enabled in `config.txt`, or wrong TRRS cable pinout |
 | Bootsplash appears, game doesn't | Video driver not KMSDRM — check `SDL_VIDEODRIVER=kmsdrm` |
 | `libSDL2-2.0.so.0: cannot open shared object file` | `setup-pi.sh` has not run; the SDL2 runtime is missing |
+| `kmsdrm not available` | No connector reports `connected`; the composite force unit is not active |
+| `EGL not initialized` | `libegl1` / `libegl-mesa0` missing; SDL2 dlopens EGL so apt never required it |
 | `No available video device` | Another process holds DRM master; stop it, or stop `piblob.service` |
 | Game runs, ignores input | User not in the `input` group |
 | Picture rolls or goes B&W | PAL/NTSC mismatch — set `vc4.tv_norm=` in `cmdline.txt` |
