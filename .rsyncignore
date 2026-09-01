@@ -1,5 +1,0 @@
-# Paths rsync must not push to the Pi (scripts/sync.sh --exclude-from).
-# The Pi keeps its own build cache; incremental rebuilds depend on target/ surviving.
-target/
-.git/
-.DS_Store
