@@ -104,7 +104,23 @@ fn main() {
     sdl2::hint::set("SDL_RENDER_DRIVER", &driver);
 
     let sdl = sdl2::init().expect("sdl init");
-    let video = sdl.video().expect("video");
+    // SDL reports the same "kmsdrm not available" whether no connector is
+    // forced on or another process already holds the display, so say both.
+    let video = match sdl.video() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("could not open the display: {}", e);
+            eprintln!();
+            eprintln!("Two different things produce that message:");
+            eprintln!("  1. another process is already DRM master. Check with:");
+            eprintln!("       pgrep -ax 'piblob|piblob-viz|piblob-cal'");
+            eprintln!("       pkill -x piblob-viz");
+            eprintln!("  2. no connector reports connected. Check with:");
+            eprintln!("       cat /sys/class/drm/card0-Composite-1/status   # want: connected");
+            eprintln!("       systemctl status piblob-composite.service");
+            std::process::exit(1);
+        }
+    };
     let window = video
         .window("piblob-viz", 720, 480)
         .fullscreen_desktop()

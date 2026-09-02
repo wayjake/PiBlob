@@ -70,9 +70,12 @@ Every cargo command runs inside the container. There is no Rust toolchain on the
   clean-looking tail had in fact failed here.
 - **Don't launch the game from a blocking call.** `run.sh` ends with `ssh -t` and runs the
   game in the foreground. With no TTY there is no Ctrl-C and nobody presses Escape, so the
-  process keeps DRM master and the next launch fails with `No available video device`.
-  `run.sh` already pkills a stale instance, but once the systemd unit exists a bare pkill
-  only makes systemd restart it. Use `ssh $PI_HOST sudo systemctl stop piblob`.
+  process keeps DRM master and the next launch fails with `kmsdrm not available`, which is
+  the same message you get when no connector is forced on. Check for a live process before
+  suspecting the connector. `run.sh` already pkills a stale instance, but once the systemd
+  unit exists a bare pkill only makes systemd restart it. Use
+  `ssh $PI_HOST sudo systemctl stop piblob`. The visualizer holds the display too, so stop
+  it with `./scripts/viz.sh stop` before running the game.
 - **Sudo on the Pi requires a password.** Anything needing root there has to be handed to
   the user; it cannot be scripted from here.
 - **You cannot see the TV.** Report what was verified (compiles, tests pass, runs without

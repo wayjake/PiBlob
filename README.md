@@ -217,10 +217,10 @@ package optimises local code rather than only dependencies.
 | Black screen, no bootsplash | Composite not enabled in `config.txt`, or wrong TRRS cable pinout |
 | Bootsplash appears, game doesn't | Video driver not KMSDRM — check `SDL_VIDEODRIVER=kmsdrm` |
 | `libSDL2-2.0.so.0: cannot open shared object file` | `setup-pi.sh` has not run; the SDL2 runtime is missing |
-| `kmsdrm not available` | No connector reports `connected`; the composite force unit is not active |
+| `kmsdrm not available` | Either another process already holds the display, or no connector reports `connected`. Check `pgrep -ax piblob-viz` first, then the composite force unit |
 | `EGL not initialized` | `libegl1` / `libegl-mesa0` missing; SDL2 dlopens EGL so apt never required it |
 | Blank screen, no error, timing looks right | SDL defaulted to the `opengl` renderer; force `software` |
-| `No available video device` | Another process holds DRM master; stop it, or stop `piblob.service` |
+| `No available video device` | Generic SDL form of the same contention. On this board it usually surfaces as `kmsdrm not available` instead |
 | Game runs, ignores input | User not in the `input` group |
 | Picture rolls or goes B&W | PAL/NTSC mismatch — set `vc4.tv_norm=` in `cmdline.txt` |
 | Edges of the UI cut off | Not respecting the title-safe inset |

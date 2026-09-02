@@ -75,6 +75,10 @@ because the Pi has 1GB of RAM; the container has 8GB and six cores.
 - Call `canvas.set_logical_size(320, 240)`. All drawing code works in this coordinate space
   and SDL handles the upscale.
 - Hide the cursor.
+- **Fail informatively if the display will not open.** SDL reports `kmsdrm not available`
+  both when another process already holds DRM master and when no connector reports
+  connected. Do not let that surface as a bare panic; print both possibilities and the
+  command that checks each. `tools/viz` does this and is worth copying.
 
 ## Structure
 
