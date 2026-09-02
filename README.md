@@ -205,6 +205,10 @@ vsync pacing, the palette rules, and the render-driver assertion in one go.
 ./scripts/viz.sh status
 ```
 
+Only one process can own the display, so a copy left running blocks the next one and SDL
+reports it as `kmsdrm not available`. From a shell on the Pi, `./piblob-viz --replace`
+takes the display from whatever holds it rather than making you go and find it.
+
 It holds 59.9Hz. It writes all 76,800 pixels itself each frame, which is why its own
 package optimises local code rather than only dependencies.
 

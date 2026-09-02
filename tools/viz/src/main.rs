@@ -91,7 +91,42 @@ fn make_palette(rng: &mut Rng) -> [(u8, u8, u8); 256] {
     pal
 }
 
+// Only one process can own the display. Everything that ever holds it here is
+// one of our own tools, so "take it" is almost always what is meant.
+fn take_over_display() {
+    let me = std::process::id().to_string();
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "piblob-viz".into());
+
+    let out = match std::process::Command::new("pgrep").args(["-x", &name]).output() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let mut killed = false;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let pid = line.trim();
+        if pid.is_empty() || pid == me {
+            continue;
+        }
+        if std::process::Command::new("kill").arg(pid).status().is_ok() {
+            println!("replaced running instance (pid {})", pid);
+            killed = true;
+        }
+    }
+    if killed {
+        // Give the outgoing process time to drop DRM master.
+        std::thread::sleep(std::time::Duration::from_millis(900));
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--replace" || a == "-r") {
+        take_over_display();
+    }
+
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos() | 1)
@@ -112,9 +147,10 @@ fn main() {
             eprintln!("could not open the display: {}", e);
             eprintln!();
             eprintln!("Two different things produce that message:");
-            eprintln!("  1. another process is already DRM master. Check with:");
+            eprintln!("  1. another process is already DRM master. Either take it:");
+            eprintln!("       {} --replace", std::env::args().next().unwrap_or_default());
+            eprintln!("     or look at what holds it:");
             eprintln!("       pgrep -ax 'piblob|piblob-viz|piblob-cal'");
-            eprintln!("       pkill -x piblob-viz");
             eprintln!("  2. no connector reports connected. Check with:");
             eprintln!("       cat /sys/class/drm/card0-Composite-1/status   # want: connected");
             eprintln!("       systemctl status piblob-composite.service");
@@ -185,9 +221,9 @@ fn main() {
     let mut col_y = vec![0i32; H];
     let mut col_d = vec![0i32; W + H];
 
-    // Optional argument: run for N seconds then exit with a report. With no
-    // argument it runs until stopped.
-    let limit: Option<f64> = std::env::args().nth(1).and_then(|a| a.parse().ok());
+    // Optional numeric argument: run for N seconds then exit with a report.
+    // With none it runs until stopped.
+    let limit: Option<f64> = args.iter().find_map(|a| a.parse::<f64>().ok());
 
     let start = Instant::now();
     let mut frames: u64 = 0;
