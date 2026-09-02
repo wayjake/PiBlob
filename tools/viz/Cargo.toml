@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+libc = "0.2.189"
 sdl2 = { version = "0.38.0", features = ["use-pkgconfig"] }
 
 # Unlike the game, this crate's own code is the hot path: it writes every one of

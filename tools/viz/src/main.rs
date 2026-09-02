@@ -14,7 +14,25 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+// Set from a signal handler so the main loop can unwind normally. Killing this
+// process outright leaves SDL no chance to drop DRM master and hand the console
+// back, which strands the display with nothing on it.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_signal(_sig: i32) {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+fn install_signal_handlers() {
+    unsafe {
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
+    }
+}
 
 const W: usize = 320;
 const H: usize = 240;
@@ -121,11 +139,56 @@ fn take_over_display() {
     }
 }
 
+// Does present_vsync change whether anything reaches the tube? Alternates two
+// unmistakable full-screen patterns on freshly built canvases, one each way.
+fn vsync_ab(sdl: &sdl2::Sdl, video: &sdl2::VideoSubsystem) {
+    for round in 0..3 {
+        for vsync in [true, false] {
+            let window = video
+                .window("ab", 720, 480)
+                .fullscreen_desktop()
+                .build()
+                .expect("window");
+            let cb = window.into_canvas();
+            let cb = if vsync { cb.present_vsync() } else { cb };
+            let mut canvas = cb.build().expect("canvas");
+            canvas.set_logical_size(W as u32, H as u32).ok();
+            let bg = if vsync {
+                Color::RGB(200, 50, 50)
+            } else {
+                Color::RGB(50, 80, 210)
+            };
+            println!(
+                "round {} : {:<18} background {}",
+                round + 1,
+                if vsync { "WITH vsync" } else { "WITHOUT vsync" },
+                if vsync { "RED" } else { "BLUE" }
+            );
+            let _ = sdl.event_pump();
+            for _ in 0..300 {
+                canvas.set_draw_color(bg);
+                canvas.clear();
+                canvas.set_draw_color(Color::RGB(240, 240, 240));
+                for k in 0..3 {
+                    canvas
+                        .fill_rect(Rect::new(20, 50 + k * 60, (W - 40) as u32, 18))
+                        .ok();
+                }
+                canvas.present();
+            }
+        }
+    }
+}
+
 fn main() {
+    install_signal_handlers();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--replace" || a == "-r") {
         take_over_display();
     }
+    let dump = args.iter().any(|a| a == "--dump");
+    let no_vsync = args.iter().any(|a| a == "--novsync");
+    let ab = args.iter().any(|a| a == "--ab");
 
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -163,17 +226,21 @@ fn main() {
         .build()
         .expect("window");
     sdl.mouse().show_cursor(false);
-    let mut canvas = window
-        .into_canvas()
-        .present_vsync()
-        .build()
-        .expect("canvas");
+    let cb = window.into_canvas();
+    let cb = if no_vsync { cb } else { cb.present_vsync() };
+    let mut canvas = cb.build().expect("canvas");
     canvas.set_logical_size(W as u32, H as u32).expect("logical size");
     let mut pump = sdl.event_pump().expect("pump");
 
     let name = canvas.info().name.to_string();
     println!("renderer: {}", name);
     assert_eq!(name, driver, "SDL handed back a different render driver");
+
+    if ab {
+        drop(canvas);
+        vsync_ab(&sdl, &video);
+        return;
+    }
 
     let creator = canvas.texture_creator();
     let mut tex = creator
@@ -230,6 +297,10 @@ fn main() {
     let mut last_report = Instant::now();
 
     'main: loop {
+        if STOP.load(Ordering::SeqCst) {
+            println!("signal received, shutting down cleanly");
+            break 'main;
+        }
         for ev in pump.poll_iter() {
             match ev {
                 Event::Quit { .. }
@@ -340,6 +411,74 @@ fn main() {
 
         canvas.present();
         frames += 1;
+
+        // --dump: read the framebuffer back and describe it, so "is anything
+        // being drawn" can be answered without anyone looking at the TV.
+        if dump && frames == 90 {
+            match canvas.read_pixels(None, PixelFormatEnum::ARGB8888) {
+                Ok(px) => {
+                    let n = px.len() / 4;
+                    let (mut lo, mut hi, mut sum) = (255u8, 0u8, 0u64);
+                    let mut seen = std::collections::HashSet::new();
+                    for i in 0..n {
+                        let b = px[i * 4];
+                        let g = px[i * 4 + 1];
+                        let r = px[i * 4 + 2];
+                        let lum = ((r as u32 * 30 + g as u32 * 59 + b as u32 * 11) / 100) as u8;
+                        lo = lo.min(lum);
+                        hi = hi.max(lum);
+                        sum += lum as u64;
+                        if seen.len() < 4096 {
+                            seen.insert((r, g, b));
+                        }
+                    }
+                    println!(
+                        "readback: {} px, luminance min {} max {} mean {}, {} distinct colours{}",
+                        n,
+                        lo,
+                        hi,
+                        sum / n as u64,
+                        seen.len(),
+                        if seen.len() >= 4096 { "+" } else { "" }
+                    );
+                    let mid = (n / 2) * 4;
+                    println!(
+                        "centre pixel: r={} g={} b={}",
+                        px[mid + 2],
+                        px[mid + 1],
+                        px[mid]
+                    );
+                    // Dump the frame so it can be looked at off the device.
+                    let (ow, oh) = canvas.output_size().unwrap_or((720, 480));
+                    let mut ppm = format!("P6\n{} {}\n255\n", ow, oh).into_bytes();
+                    for i in 0..n {
+                        ppm.push(px[i * 4 + 2]);
+                        ppm.push(px[i * 4 + 1]);
+                        ppm.push(px[i * 4]);
+                    }
+                    match std::fs::write("/tmp/viz-frame.ppm", &ppm) {
+                        Ok(()) => println!("wrote /tmp/viz-frame.ppm ({}x{})", ow, oh),
+                        Err(e) => println!("ppm write failed: {}", e),
+                    }
+                    // Luminance histogram, 16 buckets.
+                    let mut hist = [0u32; 16];
+                    for i in 0..n {
+                        let b = px[i * 4] as u32;
+                        let g = px[i * 4 + 1] as u32;
+                        let r = px[i * 4 + 2] as u32;
+                        let lum = (r * 30 + g * 59 + b * 11) / 100;
+                        hist[(lum / 16).min(15) as usize] += 1;
+                    }
+                    print!("luminance histogram:");
+                    for (k, c) in hist.iter().enumerate() {
+                        print!(" {}:{:.1}%", k * 16, *c as f64 / n as f64 * 100.0);
+                    }
+                    println!();
+                }
+                Err(e) => println!("readback failed: {}", e),
+            }
+            break 'main;
+        }
 
         if last_report.elapsed().as_secs() >= 60 {
             println!(
