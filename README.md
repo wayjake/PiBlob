@@ -191,6 +191,25 @@ first.
 
 ---
 
+## The visualizer
+
+`tools/viz` draws a plasma field under moving copper bars, with muted palettes that
+regenerate at random every eighteen seconds and crossfade between. It exists to be looked
+at, and it is also the most complete display test here: it exercises streaming textures,
+vsync pacing, the palette rules, and the render-driver assertion in one go.
+
+```bash
+./scripts/viz.sh          # build and leave it running on the Pi
+./scripts/viz.sh fg       # run in the foreground, Ctrl-C to stop
+./scripts/viz.sh stop
+./scripts/viz.sh status
+```
+
+It holds 59.9Hz. It writes all 76,800 pixels itself each frame, which is why its own
+package optimises local code rather than only dependencies.
+
+---
+
 ## Debugging
 
 | Symptom | Cause |
@@ -222,5 +241,7 @@ docker/Dockerfile      The aarch64 Debian trixie build image
 scripts/cargo.sh       Run any cargo command inside that image
 scripts/run.sh         Build, ship the binary to the Pi, and launch it
 scripts/setup-pi.sh    One-time Pi provisioning
+scripts/viz.sh         Build, run, and stop the CRT visualizer
+tools/viz/             Standalone plasma visualizer, not part of the game
 src/                   Game source
 ```

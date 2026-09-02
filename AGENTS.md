@@ -80,6 +80,12 @@ around 250 rects.
   that is not something to work around.
 - Do not add async runtimes, ECS frameworks, or asset pipelines. This is a single-threaded
   loop with a fixed set of dependencies.
+- **Watch the dev profile if you write a hot loop.** `[profile.dev.package."*"]` optimises
+  dependencies but leaves this crate's own code at `opt-level = 0`. That is the right trade
+  while game code only orchestrates Rapier and SDL. It stops being right the moment game
+  code touches every pixel: the visualizer in `tools/viz` runs at 30Hz unoptimised and
+  59.9Hz optimised, from that change alone. If you add per-pixel or per-sample work, raise
+  the profile and measure rather than assuming.
 
 ## Dependencies
 
@@ -115,6 +121,14 @@ Never run `cargo` directly. There is no Rust toolchain on the Mac and none is wa
 - Modules split by responsibility: `physics`, `render`, `input`, `game`. Keep `main.rs` to
   initialization and the loop.
 - Prefer explicit `f32` throughout to match Rapier's default feature set.
+
+## tools/viz
+
+`tools/viz` is a standalone plasma visualizer for the CRT, not part of the game. It is its
+own package with its own profile and is not referenced by the game's manifest, so leave it
+alone unless asked. It doubles as the most thorough display test in the repo: it exercises
+streaming textures, the palette, vsync pacing, and the render-driver assertion all at once.
+Drive it with `./scripts/viz.sh`.
 
 ## Testing
 

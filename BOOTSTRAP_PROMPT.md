@@ -40,9 +40,15 @@ debug = "line-tables-only"
 ```
 
 Unoptimized Rapier is too slow to run at 60Hz on this hardware, while unoptimized game code
-is fine and compiles much faster. The debuginfo setting keeps line numbers in panics and cuts
+is fine and compiles much faster. That second half holds only while game code is
+orchestrating rather than crunching. Per-pixel work written in this crate at `opt-level = 0`
+is slow enough to miss vblank; `tools/viz` halves from 59.9Hz to 30Hz that way. The debuginfo setting keeps line numbers in panics and cuts
 the binary from roughly 33MB to 13MB, which matters because that binary is copied to the Pi
 on every iteration.
+
+`tools/viz` already exists and is a separate package that the game must not depend on or
+absorb. Cargo handles the two side by side with no workspace declaration; this was checked.
+Do not add one, and do not modify that crate.
 
 Do not create `.cargo/config.toml` to limit parallelism. The old `jobs = 2` setting existed
 because the Pi has 1GB of RAM; the container has 8GB and six cores.

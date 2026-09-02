@@ -1,0 +1,15 @@
+[package]
+name = "viz"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sdl2 = { version = "0.38.0", features = ["use-pkgconfig"] }
+
+# Unlike the game, this crate's own code is the hot path: it writes every one of
+# the 76,800 pixels itself. At the game's dev setting, where dependencies are
+# optimised and local code is not, the plasma loop misses vblank and the whole
+# thing halves to 30Hz. Optimise everything here.
+[profile.dev]
+opt-level = 3
+debug = "line-tables-only"
