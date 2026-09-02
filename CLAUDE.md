@@ -31,12 +31,18 @@ frames at 60.14Hz with a 16.668ms median and no long frames. The build container
 verified: an aarch64 ELF whose libc, libm, and libgcc_s all resolve against the Pi's own
 libraries. Re-probe rather than trusting this paragraph.
 
-Two things about that stack are easy to break and hard to diagnose. SDL2 refuses to start
+Three things about that stack are easy to break and hard to diagnose. SDL2 refuses to start
 KMSDRM unless some connector reports `connected`, and composite reports `unknown` forever
 because analog video cannot detect a load, so a systemd unit forces it. SDL2 also dlopens
 `libEGL.so.1`, which means apt records no dependency and the EGL packages have to be
 installed explicitly. `scripts/setup-pi.sh` handles both, but it needs an interactive sudo
 password, so a human has to run it.
+
+The third has no fix in provisioning and has to be right in the code: SDL's default render
+driver here is `opengl`, which the GPU cannot provide, and it fails without any error at
+all. The window opens, `clear()` shows on the TV, `present()` page-flips at a believable
+60Hz, and every `fill_rect` draws nothing. A blank screen with perfect-looking timing is
+this bug. Force `software` and assert on `canvas.info().name`.
 
 ## Commands
 

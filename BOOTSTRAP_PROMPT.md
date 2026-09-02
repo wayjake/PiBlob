@@ -58,6 +58,14 @@ because the Pi has 1GB of RAM; the container has 8GB and six cores.
 - Create a fullscreen-desktop window. Do not request a specific window size; take whatever
   mode the composite connector reports (it will be 720x480).
 - Set `SDL_HINT_RENDER_SCALE_QUALITY` to `"0"` for nearest-neighbour scaling.
+- **Select the render driver explicitly.** Set `SDL_RENDER_DRIVER` to `software` before
+  building the canvas, and assert that `canvas.info().name` really is `software`. SDL's
+  default choice is `opengl`, which this board cannot provide, and it fails silently: the
+  window appears, `clear()` works, `present()` page-flips at a plausible 60Hz, and every
+  `fill_rect` draws nothing at all. You would spend a long time looking for a bug in your
+  drawing code that is not there.
+- **Build the canvas with `present_vsync`.** Without it `present()` returns immediately and
+  the loop free-spins above 430Hz.
 - Call `canvas.set_logical_size(320, 240)`. All drawing code works in this coordinate space
   and SDL handles the upscale.
 - Hide the cursor.
@@ -100,10 +108,13 @@ that is fine.
 
 Cap the accumulator so a long stall cannot spiral into unbounded catch-up.
 
-`present()` has been measured blocking on vblank on this board at a median 16.668ms, with
-zero frames beyond 1.5x median over 300 samples, so the loop is already rate-limited. Do
-not add a frame limiter. Do not code around NTSC's nominal 59.94Hz either; this mode
-presents at 60.0Hz and the accumulator will land almost exactly one step per frame.
+With `present_vsync` requested, `present()` has been measured blocking on vblank at a median
+16.68ms, so the loop is already rate-limited and must not add a frame limiter of its own.
+Do not code around NTSC's nominal 59.94Hz either; this mode presents at 59.9Hz and the
+accumulator will land almost exactly one step per frame.
+
+Drawing has room to spare: 200 filled rects cost 1.72ms of the 16.67ms frame through the
+software renderer, and 800 cost 2.85ms. If the game runs slow, suspect the physics.
 
 ## Demo scene
 

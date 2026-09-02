@@ -70,18 +70,27 @@ and needs swap the board does not have. In the container it is seconds.
 ## Measured display behaviour
 
 Taken on the real board with SDL2 driving KMSDRM at 320x240 logical over the 720x480
-composite mode, across 300 frames after a 60 frame warmup.
+composite mode.
 
 | | Measured |
 |---|---|
 | Reported mode | 720x480 @ 60Hz, ARGB8888 |
-| Steady-state present rate | 60.14Hz |
-| Frame time, median | 16.668ms |
-| Frame time, min / max | 16.289ms / 17.198ms |
-| Frames beyond 1.5x median | 0 of 300 |
+| Present rate with `present_vsync` | 59.9Hz, median frame 16.68ms |
+| Present rate without it | 431Hz software, 655Hz GLES |
+| Draw time, 200 rects, software | 1.72ms, about 10% of a frame |
+| Draw time, 800 rects, software | 2.85ms, about 17% of a frame |
 
-`present()` blocks on vblank, so a loop that simply presents every iteration is already
-rate-limited and must not add a limiter of its own.
+Two findings here are load-bearing and neither is discoverable from the Mac.
+
+**SDL's default render driver does not work on this hardware.** It picks `opengl` first,
+which VideoCore IV cannot provide. Nothing errors. The window is created, `clear()` reaches
+the tube, and `present()` page-flips at a convincing 60Hz, but every `fill_rect` silently
+draws nothing, so the screen just sits there blank. Select `software` explicitly and check
+`canvas.info().name` afterwards. `opengles2` works too and is quicker below roughly 250
+rectangles, but software overtakes it above that.
+
+**`present()` only blocks on vblank when the canvas asks for `present_vsync`.** Without it
+the loop free-spins past 430Hz and eats the CPU the physics needs.
 
 ---
 
@@ -191,6 +200,7 @@ first.
 | `libSDL2-2.0.so.0: cannot open shared object file` | `setup-pi.sh` has not run; the SDL2 runtime is missing |
 | `kmsdrm not available` | No connector reports `connected`; the composite force unit is not active |
 | `EGL not initialized` | `libegl1` / `libegl-mesa0` missing; SDL2 dlopens EGL so apt never required it |
+| Blank screen, no error, timing looks right | SDL defaulted to the `opengl` renderer; force `software` |
 | `No available video device` | Another process holds DRM master; stop it, or stop `piblob.service` |
 | Game runs, ignores input | User not in the `input` group |
 | Picture rolls or goes B&W | PAL/NTSC mismatch — set `vc4.tv_norm=` in `cmdline.txt` |
